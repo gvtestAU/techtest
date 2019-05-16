@@ -1,0 +1,496 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Vibrato Tech Test
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "[a-zA-Z0-9]+"
+    Description: Mandatory. The Environment name
+    Default: dev
+
+  AppInstanceType:
+    Type: String
+    Description: App node instance type
+    AllowedValues:
+    - t2.micro
+    ConstraintDescription: Choose an instance type.
+    Default: t2.micro
+
+  AppServerNodes:
+    Type: String
+    Description: Sets DesiredCapacity, MinSize, and MaxSize
+    AllowedValues:
+    - '2'
+    - '4'
+    - '8'
+    Default: '2'
+
+Mappings:
+  AMIRegionMap:
+    ap-southeast-2:
+      US1804HVM: ami-0b76c3b150c6b1423
+
+  SubnetConfigMap:
+    VPC:
+      CIDR: '10.0.0.0/16'
+    AppOne:
+      CIDR: '10.0.0.0/24'
+    AppTwo:
+      CIDR: '10.0.1.0/24'
+    DMZOne:
+      CIDR: '10.0.128.0/24'
+    DMZTwo:
+      CIDR: '10.0.129.0/24'
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap ['SubnetConfigMap', 'VPC', 'CIDR']
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [ !Ref 'AWS::StackName', !Ref 'EnvironmentName' ]]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ !Ref 'AWS::StackName', 'IG' ]]
+
+  GatewayAttachement:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+
+  NATElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATElasticIP.AllocationId
+      SubnetId:
+        Ref: SubnetDMZOne
+    DependsOn:
+      - SubnetDMZOne
+
+  SubnetAppOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      AvailabilityZone: !Join ['', [ !Ref 'AWS::Region', 'a' ]]
+      CidrBlock: !FindInMap ['SubnetConfigMap', 'AppOne', 'CIDR']
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ !Ref 'AWS::StackName', 'SubnetAppOne' ]]
+
+  SubnetAppTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      AvailabilityZone: !Join ['', [ !Ref 'AWS::Region', 'b' ]]
+      CidrBlock: !FindInMap ['SubnetConfigMap', 'AppTwo', 'CIDR']
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ !Ref 'AWS::StackName', 'SubnetAppTwo' ]]
+
+  SubnetDMZOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      AvailabilityZone: !Join ['', [ !Ref 'AWS::Region', 'a' ]]
+      CidrBlock: !FindInMap ['SubnetConfigMap', 'DMZOne', 'CIDR']
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ !Ref 'AWS::StackName', 'SubnetDMZOne' ]]
+
+  SubnetDMZTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      AvailabilityZone: !Join ['', [ !Ref 'AWS::Region', 'b' ]]
+      CidrBlock: !FindInMap ['SubnetConfigMap', 'DMZTwo', 'CIDR']
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ !Ref 'AWS::StackName', 'SubnetDMZTwo' ]]
+
+  TechTestECRRepository:
+    Type: AWS::ECR::Repository
+    DependsOn:
+      - AppServerRole
+    Properties:
+      RepositoryName: techtest
+      RepositoryPolicyText:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowPushPull
+          Effect: Allow
+          Principal:
+            AWS:
+            - !Join ['', [ 'arn:aws:iam::', !Ref 'AWS::AccountId', ':root' ]]
+            - !GetAtt AppServerRole.Arn
+          Action:
+          - ecr:GetDownloadUrlForLayer
+          - ecr:BatchGetImage
+          - ecr:BatchCheckLayerAvailability
+          - ecr:PutImage
+          - ecr:InitiateLayerUpload
+          - ecr:UploadLayerPart
+          - ecr:CompleteLayerUpload
+        - Sid: AllowPull
+          Effect: Allow
+          Principal:
+            AWS:
+            - !Join ['', [ 'arn:aws:iam::', !Ref 'AWS::AccountId', ':root' ]]
+            - !GetAtt AppServerRole.Arn
+          Action:
+          - ecr:GetDownloadUrlForLayer
+          - ecr:BatchGetImage
+          - ecr:BatchCheckLayerAvailability
+
+  RouteTableDMZOne:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Join ['', [ 'arn:aws:iam::', !Ref 'AWS::StackName', '-RouteTableDMZOne' ]]
+
+  RouteTableDMZTwo:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Join ['', [ 'arn:aws:iam::', !Ref 'AWS::StackName', '-RouteTableDMZTwo' ]]
+
+  RouteTableAppOne:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Join ['', [ 'arn:aws:iam::', !Ref 'AWS::StackName', '-RouteTableAppOne' ]]
+
+  RouteTableAppTwo:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Join ['', [ 'arn:aws:iam::', !Ref 'AWS::StackName', '-RouteTableAppTwo' ]]
+
+  RouteAppOneDefault:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'RouteTableAppOne'
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref 'NATGateway'
+
+  RouteAppTwoDefault:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'RouteTableAppTwo'
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref 'NATGateway'
+
+  RouteDMZOneDefault:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'RouteTableDMZOne'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'InternetGateway'
+
+  RouteDMZTwoDefault:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'RouteTableDMZTwo'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'InternetGateway'
+
+  SubnetDMZOneRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTableDMZOne
+      SubnetId:
+        Ref: SubnetDMZOne
+
+  SubnetDMZTwoRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTableDMZTwo
+      SubnetId:
+        Ref: SubnetDMZTwo
+
+  SubnetAppOneRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTableAppOne
+      SubnetId:
+        Ref: SubnetAppOne
+
+  SubnetAppTwoRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTableAppTwo
+      SubnetId:
+        Ref: SubnetAppTwo
+
+
+  SGAppALB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: App ALB Security Group
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ !Ref 'AWS::StackName', '-SGAppALB' ]]
+
+  AppApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+      - Ref: SubnetDMZOne
+      - Ref: SubnetDMZTwo
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '50'
+      SecurityGroups: 
+      - !Ref 'SGAppALB'
+
+  AppALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 60
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      HealthCheckPath: /healthcheck/
+      Matcher:
+        HttpCode: '200'
+      Name: AppALBTargetGroup
+      Port: 3000
+      Protocol: HTTP
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: 20
+      VpcId: !Ref 'VPC'
+
+  AppHTTPSALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'AppALBTargetGroup'
+      LoadBalancerArn: !Ref 'AppApplicationLoadBalancer'
+      Port: 80
+      Protocol: HTTP
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enables SSH access.
+      VpcId: !Ref 'VPC'
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3000'
+        ToPort: '3000'
+        CidrIp: !FindInMap ['SubnetConfigMap', 'DMZOne', 'CIDR']
+      - IpProtocol: tcp
+        FromPort: '3000'
+        ToPort: '3000'
+        CidrIp: !FindInMap ['SubnetConfigMap', 'DMZTwo', 'CIDR']
+
+  IAMPolicyParameterAccess:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Join:
+        - ''
+        - - Ref: AWS::StackName
+          - ParamStoreReadOnly
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Statement:
+        - Effect: Allow
+          Action:
+          - secretsmanager:*
+          Resource: !Join ['', ['arn:aws:secretsmanager:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':secret:', !Ref 'EnvironmentName', '-*']]
+      Roles:
+      - Ref: AppServerRole
+
+  AppServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Principal:
+            Service: ec2.amazonaws.com
+          Effect: Allow
+          Sid: ''
+
+  AppServerProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles: 
+      - !Ref 'AppServerRole'
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - AppApplicationLoadBalancer
+      - AuroraDBCluster
+    Properties:
+      LaunchConfigurationName: !Ref 'AppLaunchConfiguration'
+      MinSize: !Ref 'AppServerNodes'
+      MaxSize: !Ref 'AppServerNodes'
+      DesiredCapacity: !Ref 'AppServerNodes'
+      VPCZoneIdentifier:
+      - Ref: SubnetAppOne
+      - Ref: SubnetAppTwo
+      TargetGroupARNs: 
+      - !Ref 'AppALBTargetGroup'
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ 'App', !Ref 'EnvironmentName' ]]
+        PropagateAtLaunch: 'true'
+
+  AppLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      InstanceType: !Ref 'AppInstanceType'
+      AssociatePublicIpAddress: 'false'
+      SecurityGroups:
+      - Ref: AppSecurityGroup
+      KeyName: DEVOPS-ADMIN
+      ImageId: !FindInMap ['AMIRegionMap', !Ref 'AWS::Region', 'US1804HVM']
+      IamInstanceProfile: !Ref 'AppServerProfile'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update && apt-get install -y docker.io jq python-pip python-setuptools postgresql-client-10 && pip install awscli
+          git clone https://github.com/vibrato/TechTestApp.git && cd TechTestApp 
+          sed -i '/^TABLESPACE = pg_default$/d' db/db.go
+          docker build -f Dockerfile -t vibratotest/frontend:latest .
+          export VTT_DBUSER=$(aws --region ${AWS::Region} secretsmanager get-secret-value --secret-id ${EnvironmentName}-rds-app | jq --raw-output '.SecretString' | jq -r .username)
+          sleep $[ ( $RANDOM % 10 )  + 1 ]s
+          export VTT_DBPASSWORD=$(aws --region ${AWS::Region} secretsmanager get-secret-value --secret-id ${EnvironmentName}-rds-app | jq --raw-output '.SecretString' | jq -r .password)
+          sleep $[ ( $RANDOM % 10 )  + 1 ]s
+          export VTT_DBHOST=$(aws --region ${AWS::Region} secretsmanager get-secret-value --secret-id ${EnvironmentName}-rds-app | jq --raw-output '.SecretString' | jq -r .host)
+          sleep $[ ( $RANDOM % 10 )  + 1 ]s
+          export VTT_LISTENHOST=0.0.0.0
+          export PGPASSWORD=$VTT_DBPASSWORD
+          if psql -lqt -h $VTT_DBHOST -U $VTT_DBUSER | cut -d \| -f 1 | grep -qw $VTT_DBNAME; then
+            echo The $VTT_DBNAME already exists.
+          else
+            docker run --rm -p 3000:3000 --env VTT_DBHOST --env VTT_DBUSER --env VTT_DBPASSWORD --env VTT_LISTENHOST --name vibratotest-frontend vibratotest/frontend:latest updatedb
+          fi
+          sleep $[ ( $RANDOM % 10 )  + 1 ]s
+          docker run --rm -p 3000:3000 --env VTT_DBHOST --env VTT_DBUSER --env VTT_DBPASSWORD --env VTT_LISTENHOST --name vibratotest-frontend vibratotest/frontend:latest serve
+
+  PgSQLRDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: CloudFormation managed DB subnet group.
+      SubnetIds:
+      - Ref: SubnetAppOne
+      - Ref: SubnetAppTwo
+
+  PgSQLSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enables SSH access.
+      VpcId: !Ref 'VPC'
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '5432'
+        ToPort: '5432'
+        CidrIp: !FindInMap ['SubnetConfigMap', 'AppOne', 'CIDR']
+      - IpProtocol: tcp
+        FromPort: '5432'
+        ToPort: '5432'
+        CidrIp: !FindInMap ['SubnetConfigMap', 'AppTwo', 'CIDR']
+
+
+  PgSQLRDSDBClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: !Join ['-', [ !Ref 'AWS::StackName', !Ref 'EnvironmentName' ]]
+      Family: aurora-postgresql9.6
+      Parameters:
+        rds.force_ssl: 0
+
+  AuroraDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      Port: 5432
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref PgSQLRDSSecret, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref PgSQLRDSSecret, ':SecretString:password}}' ]]
+      DBSubnetGroupName: !Ref PgSQLRDSSubnetGroup
+      VpcSecurityGroupIds:
+      - !Ref PgSQLSecurityGroup
+      DBClusterParameterGroupName: !Ref PgSQLRDSDBClusterParameterGroup
+
+  DBParamGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: !Join [ "- ", [ "Aurora PG DB Parameter Group", !Ref EnvironmentName ] ]
+      Family: aurora-postgresql9.6
+      Parameters:
+        shared_preload_libraries: auto_explain,pg_stat_statements,pg_hint_plan,pgaudit
+
+  AuroraDBFirstInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      CopyTagsToSnapshot: true  
+      DBInstanceClass: db.r4.large
+      DBClusterIdentifier: !Ref AuroraDBCluster  
+      Engine: aurora-postgresql
+      DBParameterGroupName: !Ref 'DBParamGroup'
+      DBSubnetGroupName: !Ref PgSQLRDSSubnetGroup
+      PubliclyAccessible: false
+
+  PgSQLRDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: 'RDS master secret'
+      Name: !Join ['-', [ !Ref 'EnvironmentName', 'rds-app' ]]
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "app"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
+  PgSQLRDSSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref PgSQLRDSSecret
+      TargetId: !Ref AuroraDBCluster
+      TargetType: AWS::RDS::DBCluster
+
+Outputs:
+  ClusterEndpoint:
+    Description: 'ALB Endpoint'
+    Value: !GetAtt 'AppApplicationLoadBalancer.DNSName'
+
